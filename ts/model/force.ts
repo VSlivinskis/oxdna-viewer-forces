@@ -846,13 +846,127 @@ class RepulsionPlaneMoving extends PlaneForce {
         this._pointOnPlane = pbar;
     }
 }  
+
 class RepulsionPlane extends PlaneForce {
     type = 'repulsion_plane';
-    particles: BasicElement[] | number = -1; // Can be an array of particles or -1 (all)
-    stiff: number; // stiffness of the harmonic repulsion potential.
-    dir: THREE.Vector3;
-    position: number;
-    
+    particles: BasicElement[] | number = -1;
+    stiff: number;
+    dir: THREE.Vector3 = new THREE.Vector3(0, 0, 1);
+    position: number = 0;
+
+    // Match oxDNA backend semantics
+    starting_position: number;
+    v: number = 0.0;
+    end_position: number = 1e6;
+
+    override setFromParsedJson(parsedjson: any) {
+        super.setFromParsedJson(parsedjson);
+
+        // oxDNA input "position" is the starting position
+        if (this.starting_position === undefined || this.starting_position === null) {
+            this.starting_position = this.position;
+        }
+
+        this.update();
+    }
+
+    private _currentSimStep(): number {
+        // Match the moving-force pattern used elsewhere in the viewer:
+        // prefer viewer-global time-like state first.
+        if (typeof window !== 'undefined') {
+            const w: any = window as any;
+            if (Number.isFinite(w.currentSimTime)) return w.currentSimTime;
+            if (Number.isFinite(w.currentFrameIndex)) return w.currentFrameIndex;
+        }
+
+        let step = 0;
+        try {
+            const sys =
+                (typeof systems !== 'undefined' && (systems as any[]).length > 0)
+                    ? (systems as any[])[(systems as any[]).length - 1]
+                    : undefined;
+            const r = sys?.reader;
+
+            step =
+                (Number.isFinite(r?.frameIndex) ? r.frameIndex :
+                 Number.isFinite(r?.currentFrame) ? r.currentFrame :
+                 Number.isFinite(r?.current) ? r.current :
+                 Number.isFinite(r?.frame) ? r.frame : 0);
+        } catch (_) {}
+
+        return step;
+    }
+
+    private _updatedPosition(step: number): number {
+        const start =
+            (this.starting_position !== undefined && this.starting_position !== null)
+                ? this.starting_position
+                : this.position;
+
+        let pos = start + this.v * step;
+
+        if (this.end_position > start && pos > this.end_position) {
+            pos = this.end_position;
+        }
+        if (this.end_position < start && pos < this.end_position) {
+            pos = this.end_position;
+        }
+        console.log("REPULSION PLANE");
+        return pos;
+    }
+
+    override update(): void {
+        const step = this._currentSimStep();
+        this.position = this._updatedPosition(step);
+
+        // Plane equation is dir·x + position = 0
+        this._pointOnPlane = this.dir.clone().multiplyScalar(-this.position);
+    }
+
+    override toJSON() {
+        const particleData = Array.isArray(this.particles)
+            ? this.particles.map(p => p.id)
+            : this.particles;
+
+        return {
+            type: this.type,
+            particle: particleData,
+            stiff: this.stiff,
+            dir: [this.dir.x, this.dir.y, this.dir.z],
+            position: (this.starting_position ?? this.position),
+            ...(this.v !== undefined ? { v: this.v } : {}),
+            ...(this.end_position !== undefined ? { end_position: this.end_position } : {})
+        };
+    }
+
+    override toString(idMap?: Map<BasicElement, number>): string {
+        const particleRepresentation =
+            Array.isArray(this.particles)
+                ? this.particles.map(p => idMap ? idMap.get(p) : p.id).join(", ")
+                : this.particles.toString();
+
+        const extras: string[] = [];
+        if (this.v !== undefined) extras.push(`v = ${this.v}`);
+        if (this.end_position !== undefined) extras.push(`end_position = ${this.end_position}`);
+
+        return `{
+    type = ${this.type}
+    particle = ${particleRepresentation}
+    stiff = ${this.stiff}
+    dir = ${this.dir.x},${this.dir.y},${this.dir.z}
+    position = ${this.starting_position ?? this.position}
+    ${extras.join('\n    ')}
+}`;
+    }
+
+    override description(): string {
+        const target =
+            Array.isArray(this.particles)
+                ? this.particles.map(p => p.id).join(", ")
+                : (this.particles === -1 ? "all particles" : `${this.particles}`);
+
+        return `Repulsion plane on ${target}`;
+    }
 }
 
 class AttractionPlane extends PlaneForce {

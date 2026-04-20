@@ -679,13 +679,137 @@ class PlaneForce extends Force {
       // plane position and orientation are persistent, so no need to update
   }
 }
+
 class RepulsionPlane extends PlaneForce {
-  type = 'repulsion_plane';
-  particles = -1; // Can be an array of particles or -1 (all)
-  stiff; // stiffness of the harmonic repulsion potential.
-  dir;
-  position;
+  constructor() {
+    super();
+    this.type = 'repulsion_plane';
+    this.particles = -1;
+    this.stiff = undefined;
+    this.dir = new THREE.Vector3(0, 0, 1);
+    this.position = 0;
+
+    // Match oxDNA backend semantics
+    this.starting_position = undefined;
+    this.v = 0.0;
+    this.end_position = 1e6;
+  }
+
+  setFromParsedJson(parsedjson) {
+    super.setFromParsedJson(parsedjson);
+
+    // In oxDNA input, "position" is the starting position
+    if (this.starting_position === undefined || this.starting_position === null) {
+      this.starting_position = this.position;
+    }
+
+    this.update();
+  }
+
+  _currentSimStep() {
+    // Match the pattern used by other moving viewer forces:
+    // prefer viewer-global time-like state first
+    if (typeof window !== 'undefined') {
+      if (Number.isFinite(window.currentSimTime)) return window.currentSimTime;
+      if (Number.isFinite(window.currentFrameIndex)) return window.currentFrameIndex;
+    }
+
+    let step = 0;
+    try {
+      const sys =
+        (typeof systems !== 'undefined' && systems.length > 0)
+          ? systems[systems.length - 1]
+          : undefined;
+      const r = sys?.reader;
+
+      step =
+        (Number.isFinite(r?.frameIndex) ? r.frameIndex :
+         Number.isFinite(r?.currentFrame) ? r.currentFrame :
+         Number.isFinite(r?.current) ? r.current :
+         Number.isFinite(r?.frame) ? r.frame : 0);
+    } catch (_) {}
+
+    return step;
+  }
+
+  _updatedPosition(step) {
+    const start =
+      (this.starting_position !== undefined && this.starting_position !== null)
+        ? this.starting_position
+        : this.position;
+
+    let pos = start + this.v * step;
+
+    if (this.end_position > start && pos > this.end_position) {
+      pos = this.end_position;
+    }
+    if (this.end_position < start && pos < this.end_position) {
+      pos = this.end_position;
+    }
+
+    return pos;
+  }
+
+  update() {
+    const step = this._currentSimStep();
+    const newPos = this._updatedPosition(step);
+
+    console.log(
+      "RepulsionPlane",
+      "step:", step,
+      "start:", this.starting_position,
+      "v:", this.v,
+      "end:", this.end_position,
+      "pos:", newPos
+    );
+
+    this.position = newPos;
+
+    // Plane equation: dir·x + position = 0
+    this._pointOnPlane = this.dir.clone().multiplyScalar(-this.position);
+  }
+
+  toJSON() {
+    const particleData = Array.isArray(this.particles)
+      ? this.particles.map(p => p.id)
+      : this.particles;
+
+    return {
+      type: this.type,
+      particle: particleData,
+      stiff: this.stiff,
+      dir: [this.dir.x, this.dir.y, this.dir.z],
+      position: (this.starting_position ?? this.position),
+      ...(this.v !== undefined ? { v: this.v } : {}),
+      ...(this.end_position !== undefined ? { end_position: this.end_position } : {})
+    };
+  }
+
+  toString(idMap) {
+    const particleRepresentation = Array.isArray(this.particles)
+      ? this.particles.map(p => idMap ? idMap.get(p) : p.id).join(", ")
+      : this.particles.toString();
+
+    return `{
+  type = ${this.type}
+  particle = ${particleRepresentation}
+  stiff = ${this.stiff}
+  dir = ${this.dir.x},${this.dir.y},${this.dir.z}
+  position = ${this.starting_position ?? this.position}
+  v = ${this.v}
+  end_position = ${this.end_position}
+}`;
+  }
+
+  description() {
+    const target = Array.isArray(this.particles)
+      ? this.particles.map(p => p.id).join(", ")
+      : (this.particles === -1 ? "all particles" : `${this.particles}`);
+
+    return `Repulsion plane on ${target}`;
+  }
 }
+
 class AttractionPlane extends PlaneForce {
   type = 'attraction_plane';
   particles = -1; // Can be an array of particles or -1 (all)
